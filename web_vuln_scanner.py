@@ -52,6 +52,7 @@ class WebVulnScanner:
         """
         Método auxiliar para enviar peticiones HTTP/HTTPS con manejo de errores.
         """
+        print(f"[*] Accediendo a: {url}") # <-- Línea de depuración añadida
         try:
             if method.lower() == 'get':
                 response = self.session.get(url, params=params, timeout=timeout, allow_redirects=allowRedirects)
