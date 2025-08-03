@@ -346,16 +346,24 @@ def main():
 
     # --- Ejecutar pruebas basadas en la configuración del .env ---
     if runSqli:
-        fullSqliUrl = urljoin(scanner.baseUrl, sqliPath)
+        # Arreglo para que la ruta se una correctamente
+        clean_sqliPath = sqliPath.lstrip('/')
+        fullSqliUrl = urljoin(scanner.baseUrl, clean_sqliPath)
         scanner.checkSqlInjection(fullSqliUrl, paramNames=sqliParams, method=sqliMethod)
 
     if runXssReflected:
-        fullXssReflectedUrl = urljoin(scanner.baseUrl, xssReflectedPath)
+        # Arreglo para que la ruta se una correctamente
+        clean_xssReflectedPath = xssReflectedPath.lstrip('/')
+        fullXssReflectedUrl = urljoin(scanner.baseUrl, clean_xssReflectedPath)
         scanner.checkXssReflected(fullXssReflectedUrl, paramNames=xssReflectedParams, method=xssReflectedMethod)
 
     if runXssStored:
-        fullXssSubmitUrl = urljoin(scanner.baseUrl, xssStoredSubmitPath)
-        fullXssViewUrl = urljoin(scanner.baseUrl, xssStoredViewPath)
+        # Arreglo para que las rutas se unan correctamente
+        clean_xssSubmitPath = xssStoredSubmitPath.lstrip('/')
+        clean_xssViewPath = xssStoredViewPath.lstrip('/')
+        
+        fullXssSubmitUrl = urljoin(scanner.baseUrl, clean_xssSubmitPath)
+        fullXssViewUrl = urljoin(scanner.baseUrl, clean_xssViewPath)
         scanner.checkXssStored(fullXssSubmitUrl, fullXssViewUrl, submitParamNames=xssStoredSubmitParams)
         
     scanner.generateReport()
