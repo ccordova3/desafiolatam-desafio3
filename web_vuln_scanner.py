@@ -277,7 +277,7 @@ class WebVulnScanner:
                                     "payload": payload,
                                     "proof": f"Payload '{payload}' found in {viewUrl} after submission."
                                 }
-                                self.vulnerabilitiesFound.append(vulnerabilidadDetails)
+                                self.vulnerabilitiesFound.append(vulnerabilityDetails)
                                 print(f"\n[!!!] XSS Stored detectado (simulado) en '{paramName}'.")
                                 pbar.colour = 'red'
                             else:
@@ -311,6 +311,23 @@ class WebVulnScanner:
         print("\nReporte de vulnerabilidades completado.")
 
 def main():
+    # Cargar el objetivo y los parámetros desde el archivo .env
+    webVulnTarget = config('WEB_VULN_TARGET')
+    webLoginUsername = config('WEB_LOGIN_USERNAME', default='admin')
+    webLoginPassword = config('WEB_LOGIN_PASSWORD', default='password')
+    sqliMethod = config('SQLI_METHOD', default='get')
+    sqliPath = config('SQLI_PATH', default='')
+    sqliParams = [p.strip() for p in config('SQLI_PARAMS', default='').split(',') if p.strip()]
+    xssReflectedMethod = config('XSS_REFLECTED_METHOD', default='get')
+    xssReflectedPath = config('XSS_REFLECTED_PATH', default='')
+    xssReflectedParams = [p.strip() for p in config('XSS_REFLECTED_PARAMS', default='').split(',') if p.strip()]
+    xssStoredSubmitPath = config('XSS_STORED_SUBMIT_PATH', default='')
+    xssStoredViewPath = config('XSS_STORED_VIEW_PATH', default='')
+    xssStoredSubmitParams = [p.strip() for p in config('XSS_STORED_SUBMIT_PARAMS', default='').split(',') if p.strip()]
+    runSqli = config('RUN_SQLI', default='false').lower() == 'true'
+    runXssReflected = config('RUN_XSS_REFLECTED', default='false').lower() == 'true'
+    runXssStored = config('RUN_XSS_STORED', default='false').lower() == 'true'
+    
     warnings.filterwarnings("ignore", category=UserWarning, module='urllib3')
 
     print("=== Herramienta de Detección de Vulnerabilidades Web (Requerimiento 3) ===")
@@ -346,19 +363,16 @@ def main():
 
     # --- Ejecutar pruebas basadas en la configuración del .env ---
     if runSqli:
-        # Arreglo para que la ruta se una correctamente
         clean_sqliPath = sqliPath.lstrip('/')
         fullSqliUrl = urljoin(scanner.baseUrl, clean_sqliPath)
         scanner.checkSqlInjection(fullSqliUrl, paramNames=sqliParams, method=sqliMethod)
 
     if runXssReflected:
-        # Arreglo para que la ruta se una correctamente
         clean_xssReflectedPath = xssReflectedPath.lstrip('/')
         fullXssReflectedUrl = urljoin(scanner.baseUrl, clean_xssReflectedPath)
         scanner.checkXssReflected(fullXssReflectedUrl, paramNames=xssReflectedParams, method=xssReflectedMethod)
 
     if runXssStored:
-        # Arreglo para que las rutas se unan correctamente
         clean_xssSubmitPath = xssStoredSubmitPath.lstrip('/')
         clean_xssViewPath = xssStoredViewPath.lstrip('/')
         

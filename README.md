@@ -55,7 +55,7 @@ ENUM_TARGET_IP="192.168.100.102"
 ENUM_PORTS="21,22,23,25,53,80,110,139,443,445,3389,8080"
 
 # Configuración para Explotación Web (Requerimiento 3)
-WEB_VULN_TARGET="[http://192.168.100.102/dvwa](http://192.168.100.102/dvwa)"
+WEB_VULN_TARGET="http://192.168.100.102/dvwa"
 WEB_LOGIN_USERNAME="admin"
 WEB_LOGIN_PASSWORD="password"
 SQLI_GET_PARAMS="id,Submit"
