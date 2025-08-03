@@ -4,62 +4,66 @@ from bs4 import BeautifulSoup
 from tqdm import tqdm
 import time
 import re
-from decouple import config # Importar config para leer el .env
+from decouple import config
+import warnings
 
-# Cargar el objetivo desde el .env
-TARGET = config('TARGET')
+# Cargar el objetivo y los parámetros desde el archivo .env
+webVulnTarget = config('WEB_VULN_TARGET')
+webLoginUsername = config('WEB_LOGIN_USERNAME', default='admin')
+webLoginPassword = config('WEB_LOGIN_PASSWORD', default='password')
+sqliGetParams = [p.strip() for p in config('SQLI_GET_PARAMS', default='').split(',') if p.strip()]
+sqliPostParams = [p.strip() for p in config('SQLI_POST_PARAMS', default='').split(',') if p.strip()]
+xssReflectedGetParams = [p.strip() for p in config('XSS_REFLECTED_GET_PARAMS', default='').split(',') if p.strip()]
+xssReflectedPostParams = [p.strip() for p in config('XSS_REFLECTED_POST_PARAMS', default='').split(',') if p.strip()]
+xssStoredSubmitParams = [p.strip() for p in config('XSS_STORED_SUBMIT_PARAMS', default='').split(',') if p.strip()]
 
 class WebVulnScanner:
     """
-    Herramienta especializada para detectar SQL Injection y XSS (Reflected, Stored).
-    Diseñada para pruebas controladas en entornos de laboratorio.
+    Clase que implementa una herramienta para detectar SQL Injection y XSS.
     """
-    def __init__(self, base_url: str):
-        # Validar que la URL base es válida y tiene esquema
-        parsed_url = urlparse(base_url)
-        if not parsed_url.scheme or not parsed_url.netloc:
-            raise ValueError(f"URL base '{base_url}' no es válida o no tiene un esquema (ej. http:// o https://).")
+    def __init__(self, baseUrl: str):
+        parsedUrl = urlparse(baseUrl)
+        if not parsedUrl.scheme or not parsedUrl.netloc:
+            raise ValueError(f"URL base '{baseUrl}' no es válida o no tiene un esquema (ej. http:// o https://).")
             
-        self.base_url = base_url
+        self.baseUrl = baseUrl
         self.session = requests.Session()
-        self.vulnerabilities_found = []
-        self.common_sql_errors = [ # Errores SQL comunes para detección basada en errores
+        self.vulnerabilitiesFound = []
+        self.commonSqlErrors = [
             "mysql_fetch_array", "ORA-01756", "Microsoft OLE DB", "SQL syntax",
             "You have an error in your SQL syntax", "Warning: mysql_fetch_array()",
             "SQLSTATE", "ODBC SQL", "PostgreSQL query failed", "supplied argument is not a valid MySQL"
         ]
         
-        # Payloads de XSS
-        self.xss_payloads = [
+        self.xssPayloads = [
             "<script>alert('XSS')</script>",
             "<img src=x onerror=alert('XSS')>",
             "javascript:alert('XSS')",
             "<svg onload=alert('XSS')>",
             "\"><script>alert('XSS')</script>",
-            "';alert(String.fromCharCode(88,83,83))//", # Hex/ASCII bypass
+            "';alert(String.fromCharCode(88,83,83))//",
             "<body onload=alert('XSS')>"
         ]
-        # Indicadores de XSS para buscar en la respuesta
-        self.xss_indicators = [
+        self.xssIndicators = [
             "alert('XSS')", "<script>alert('XSS')</script>", "javascript:alert"
         ]
 
-    def _send_request(self, method: str, url: str, params: dict = None, data: dict = None, json: dict = None, timeout: int = 5):
+    def sendRequest(self, method: str, url: str, params: dict = None, data: dict = None, json: dict = None, timeout: int = 5, allowRedirects=True):
         """
-        Método auxiliar para enviar peticiones HTTP/HTTPS con manejo básico de errores.
+        Método auxiliar para enviar peticiones HTTP/HTTPS con manejo de errores.
         """
         try:
             if method.lower() == 'get':
-                response = self.session.get(url, params=params, timeout=timeout)
+                response = self.session.get(url, params=params, timeout=timeout, allow_redirects=allowRedirects)
             elif method.lower() == 'post':
-                response = self.session.post(url, data=data, json=json, timeout=timeout)
+                response = self.session.post(url, data=data, json=json, timeout=timeout, allow_redirects=allowRedirects)
             else:
                 print(f"[*] Método HTTP no soportado: {method}")
                 return None
             response.raise_for_status()
             return response
         except requests.exceptions.HTTPError as e:
-            # print(f"[*] Error HTTP {e.response.status_code} al acceder a {url}: {e.response.text[:100]}...")
+            print(f"[*] Error HTTP {e.response.status_code} al acceder a {url}. Respuesta: {e.response.text[:100]}...")
             return e.response
         except requests.exceptions.ConnectionError as e:
             print(f"[*] Error de conexión a {url}: {e}")
@@ -71,16 +75,31 @@ class WebVulnScanner:
             print(f"[*] Error inesperado al enviar petición a {url}: {e}")
             return None
 
-    def check_sql_injection(self, url: str, form_params: dict = None, query_params: dict = None):
+    def getDvwaCsrfToken(self, url: str) -> str:
         """
-        Testea SQL Injection basada en errores o en patrones de respuesta booleana.
-        
-        url: La URL del endpoint a testear.
-        form_params: Un diccionario de parámetros POST del formulario.
-        query_params: Un diccionario de parámetros GET en la URL (query string).
+        Extrae el token anti-CSRF de una página de DVWA.
         """
-        print(f"\n--- Probando SQL Injection en: {url} ---")
-        payloads_to_test = [
+        try:
+            response = self.sendRequest('get', url)
+            if response and response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'lxml')
+                tokenField = soup.find('input', {'name': 'user_token', 'type': 'hidden'})
+                if tokenField:
+                    return tokenField['value']
+                else:
+                    print(f"[*] Advertencia: No se encontró el token CSRF en {url}.")
+            else:
+                print(f"[*] Falló la obtención de la página para el token CSRF: {url}. Estado: {response.status_code if response else 'N/A'}")
+        except Exception as e:
+            print(f"[*] Error al intentar obtener el token CSRF de {url}: {e}")
+        return ""
+
+    def checkSqlInjection(self, url: str, paramNames: list, method: str = 'get'):
+        """
+        Testea SQL Injection basada en errores, tiempo y patrones de respuesta.
+        """
+        print(f"\n--- Probando SQL Injection en: {url} (Método: {method.upper()}) ---")
+        payloadsToTest = [
             "' OR '1'='1 --",
             "' OR '1'='2 --",
             "\" OR \"1\"=\"1 --",
@@ -89,197 +108,187 @@ class WebVulnScanner:
             "admin' OR 1=1 --",
             "1 OR 1=1",
             "1 AND 1=2",
-            "'; WAITFOR DELAY '00:00:05'--", # Time-based (MS SQL Server)
-            " UNION SELECT NULL,NULL,NULL,NULL--", # Union-based (ajustar NULLES)
-            "' UNION SELECT @@version,NULL,NULL,NULL--", # Para obtener versión de BD
-            " AND (SELECT SLEEP(5))--" # Time-based (MySQL/PostgreSQL)
+            "'; WAITFOR DELAY '00:00:05'--",
+            " UNION SELECT NULL,NULL,NULL,NULL--",
+            "' UNION SELECT @@version,NULL,NULL,NULL--",
+            " AND (SELECT SLEEP(5))--"
         ]
         
-        vulnerable_params = []
-
-        # Determinar si es GET o POST
-        is_get = query_params is not None
-        is_post = form_params is not None
-
-        # Si no hay parámetros para testear, intentamos obtenerlos de la URL si es GET
-        if is_get and not query_params:
-            parsed_url = urlparse(url)
-            query_params = parse_qs(parsed_url.query)
-            # Convertir listas de parse_qs a valores individuales
-            query_params = {k: v[0] for k, v in query_params.items()}
-
-
-        target_params = query_params if is_get else form_params
-        if not target_params:
-            print("[*] No se encontraron parámetros testeables para SQLi.")
+        if not paramNames:
+            print("[*] No se proporcionaron nombres de parámetros para SQLi.")
             return
 
-        total_tests = len(payloads_to_test) * len(target_params)
-        with tqdm(total=total_tests, desc="Testeando SQLi", unit="payloads", ncols=80) as pbar:
-            for param_name, original_value in target_params.items():
-                for payload in payloads_to_test:
-                    test_params = target_params.copy()
-                    test_params[param_name] = original_value + payload
+        baseParams = {name: "test_value" for name in paramNames}
+        
+        totalTests = len(payloadsToTest) * len(paramNames)
+        with tqdm(total=totalTests, desc="Testeando SQLi", unit="payloads", ncols=80) as pbar:
+            for paramName in paramNames:
+                for payload in payloadsToTest:
+                    currentParams = baseParams.copy()
+                    currentParams[paramName] = currentParams[paramName] + payload
                     
                     response = None
-                    if is_get:
-                        response = self._send_request('get', url, params=test_params)
-                    elif is_post:
-                        response = self._send_request('post', url, data=test_params)
+                    if method.lower() == 'get':
+                        response = self.sendRequest('get', url, params=currentParams)
+                    elif method.lower() == 'post':
+                        response = self.sendRequest('post', url, data=currentParams)
 
                     if response:
-                        # Detección basada en errores
-                        for error_pattern in self.common_sql_errors:
-                            if error_pattern.lower() in response.text.lower():
-                                vulnerability_details = {
+                        for errorPattern in self.commonSqlErrors:
+                            if errorPattern.lower() in response.text.lower():
+                                vulnerabilityDetails = {
                                     "type": "SQL Injection (Error-based)",
                                     "url": url,
-                                    "parameter": param_name,
+                                    "parameter": paramName,
                                     "payload": payload,
-                                    "proof": f"Error pattern '{error_pattern}' found."
+                                    "proof": f"Error pattern '{errorPattern}' found."
                                 }
-                                self.vulnerabilities_found.append(vulnerability_details)
-                                print(f"\n[!!!] SQLi (Error-based) detectado en '{param_name}' con payload: {payload}")
+                                self.vulnerabilitiesFound.append(vulnerabilityDetails)
+                                print(f"\n[!!!] SQLi (Error-based) detectado en '{paramName}' con payload: {payload}")
                                 pbar.colour = 'red'
                                 break
                         
-                        # Detección basada en tiempo (para Blind SQLi)
                         if "WAITFOR DELAY" in payload or "SLEEP" in payload:
-                            start_time = time.time()
-                            if is_get:
-                                response_time_based = self._send_request('get', url, params=test_params)
-                            elif is_post:
-                                response_time_based = self._send_request('post', url, data=test_params)
+                            startTime = time.time()
+                            if method.lower() == 'get':
+                                responseTimeBased = self.sendRequest('get', url, params=currentParams)
+                            elif method.lower() == 'post':
+                                responseTimeBased = self.sendRequest('post', url, data=currentParams)
 
-                            if response_time_based:
-                                end_time = time.time()
-                                elapsed_time = end_time - start_time
-                                if elapsed_time > timeout + 3:
-                                    vulnerability_details = {
+                            if responseTimeBased:
+                                endTime = time.time()
+                                elapsedTime = endTime - startTime
+                                if elapsedTime > 5 + 3:
+                                    vulnerabilityDetails = {
                                         "type": "SQL Injection (Time-based Blind)",
                                         "url": url,
-                                        "parameter": param_name,
+                                        "parameter": paramName,
                                         "payload": payload,
-                                        "proof": f"Response took {elapsed_time:.2f} seconds (expected around {timeout}s)."
+                                        "proof": f"Response took {elapsedTime:.2f} seconds (expected around 5s)."
                                     }
-                                    self.vulnerabilities_found.append(vulnerability_details)
-                                    print(f"\n[!!!] SQLi (Time-based Blind) detectado en '{param_name}' con payload: {payload}")
+                                    self.vulnerabilitiesFound.append(vulnerabilityDetails)
+                                    print(f"\n[!!!] SQLi (Time-based Blind) detectado en '{paramName}' con payload: {payload}")
                                     pbar.colour = 'red'
                     
                     pbar.update(1)
 
-    def check_xss_reflected(self, url: str, form_params: dict = None, query_params: dict = None):
+    def checkXssReflected(self, url: str, paramNames: list, method: str = 'get'):
         """
         Testea XSS Reflected (no persistente) inyectando payloads y buscando su reflejo.
         """
-        print(f"\n--- Probando XSS Reflected en: {url} ---")
+        print(f"\n--- Probando XSS Reflected en: {url} (Método: {method.upper()}) ---")
         
-        # Determinar si es GET o POST
-        is_get = query_params is not None
-        is_post = form_params is not None
-
-        if is_get and not query_params:
-            parsed_url = urlparse(url)
-            query_params = parse_qs(parsed_url.query)
-            query_params = {k: v[0] for k, v in query_params.items()}
-
-        target_params = query_params if is_get else form_params
-        if not target_params:
-            print("[*] No se encontraron parámetros testeables para XSS Reflected.")
+        if not paramNames:
+            print("[*] No se proporcionaron nombres de parámetros para XSS Reflected.")
             return
 
-        total_tests = len(self.xss_payloads) * len(target_params)
-        with tqdm(total=total_tests, desc="Testeando XSS Reflected", unit="payloads", ncols=80) as pbar:
-            for param_name, original_value in target_params.items():
-                for payload in self.xss_payloads:
-                    test_params = target_params.copy()
-                    test_params[param_name] = payload
+        baseParams = {name: "test_value" for name in paramNames}
+        
+        totalTests = len(self.xssPayloads) * len(paramNames)
+        with tqdm(total=totalTests, desc="Testeando XSS Reflected", unit="payloads", ncols=80) as pbar:
+            for paramName in paramNames:
+                for payload in self.xssPayloads:
+                    currentParams = baseParams.copy()
+                    currentParams[paramName] = payload
                     
                     response = None
-                    if is_get:
-                        response = self._send_request('get', url, params=test_params)
-                    elif is_post:
-                        response = self._send_request('post', url, data=test_params)
+                    if method.lower() == 'get':
+                        response = self.sendRequest('get', url, params=currentParams)
+                    elif method.lower() == 'post':
+                        response = self.sendRequest('post', url, data=currentParams)
 
                     if response and response.status_code == 200:
-                        response_text_lower = response.text.lower()
-                        for indicator in self.xss_indicators:
-                            if indicator.lower() in response_text_lower:
-                                vulnerability_details = {
+                        responseTextLower = response.text.lower()
+                        for indicator in self.xssIndicators:
+                            if indicator.lower() in responseTextLower:
+                                vulnerabilityDetails = {
                                     "type": "XSS Reflected",
                                     "url": url,
-                                    "parameter": param_name,
+                                    "parameter": paramName,
                                     "payload": payload,
                                     "proof": f"Payload '{payload}' or indicator '{indicator}' reflected in response."
                                 }
-                                self.vulnerabilities_found.append(vulnerability_details)
-                                print(f"\n[!!!] XSS Reflected detectado en '{param_name}' con payload: {payload}")
+                                self.vulnerabilitiesFound.append(vulnerabilityDetails)
+                                print(f"\n[!!!] XSS Reflected detectado en '{paramName}' con payload: {payload}")
                                 pbar.colour = 'red'
                                 break
                     pbar.update(1)
 
-    def check_xss_stored(self, submit_url: str, view_url: str, submit_params: dict = None):
+    def checkXssStored(self, submitUrl: str, viewUrl: str, submitParamNames: list):
         """
         Simula la detección de XSS Stored.
-        Requiere una URL para enviar el payload (submit_url) y otra para visualizarlo (view_url).
         """
-        print(f"\n--- Probando XSS Stored (simulado) en: {submit_url} ---")
+        print(f"\n--- Probando XSS Stored (simulado) en: {submitUrl} ---")
 
-        if not submit_params:
-            print("[*] No se proporcionaron parámetros para el envío de XSS Stored.")
+        if not submitParamNames:
+            print("[*] No se proporcionaron nombres de parámetros para el envío de XSS Stored.")
             return
 
         payload = "<script>alert('XSS_Stored')</script>"
 
-        total_tests = len(submit_params)
-        with tqdm(total=total_tests, desc="Testeando XSS Stored", unit="payloads", ncols=80) as pbar:
-            for param_name, original_value in submit_params.items():
-                test_params = submit_params.copy()
-                test_params[param_name] = payload
-                
-                print(f"\n[*] Enviando payload XSS Stored a '{param_name}' en {submit_url}...")
-                submit_response = self._send_request('post', submit_url, data=test_params)
-                
-                if submit_response and submit_response.status_code < 400:
-                    print(f"[*] Payload enviado. Verificando reflejo en {view_url}...")
-                    time.sleep(1)
+        totalTests = len(submitParamNames)
+        with tqdm(total=totalTests, desc="Testeando XSS Stored", unit="payloads", ncols=80) as pbar:
+            for paramName in submitParamNames:
+                baseSubmitParams = {name: "test_value" for name in submitParamNames}
+                testParams = baseSubmitParams.copy()
+                testParams[paramName] = payload
 
-                    view_response = self._send_request('get', view_url)
-                    
-                    if view_response and view_response.status_code == 200:
-                        if payload.lower() in view_response.text.lower():
-                            vulnerability_details = {
-                                "type": "XSS Stored (Simulated)",
-                                "submit_url": submit_url,
-                                "view_url": view_url,
-                                "parameter": param_name,
-                                "payload": payload,
-                                "proof": f"Payload '{payload}' found in {view_url} after submission."
-                            }
-                            self.vulnerabilities_found.append(vulnerability_details)
-                            print(f"\n[!!!] XSS Stored detectado (simulado) en '{param_name}'.")
-                            pbar.colour = 'red'
+                print(f"[*] Intentando obtener el token CSRF de {submitUrl}...")
+                csrfToken = self.getDvwaCsrfToken(submitUrl)
+                if not csrfToken:
+                    print(f"[*] No se pudo obtener el token CSRF de {submitUrl}. Saltando prueba para este parámetro.")
+                    pbar.update(1)
+                    continue
+
+                testParams['user_token'] = csrfToken
+                testParams['submit'] = 'Submit'
+
+                print(f"[*] Enviando payload XSS Stored a '{paramName}' en {submitUrl} con token CSRF...")
+                submitResponse = self.sendRequest('post', submitUrl, data=testParams, allowRedirects=True)
+                
+                if submitResponse and submitResponse.status_code == 200:
+                    if "Comment has been added!" in submitResponse.text:
+                        print(f"[*] Payload enviado exitosamente. Verificando reflejo en {viewUrl}...")
+                        time.sleep(1)
+
+                        viewResponse = self.sendRequest('get', viewUrl)
+                        
+                        if viewResponse and viewResponse.status_code == 200:
+                            if payload.lower() in viewResponse.text.lower():
+                                vulnerabilityDetails = {
+                                    "type": "XSS Stored (Simulated)",
+                                    "submitUrl": submitUrl,
+                                    "viewUrl": viewUrl,
+                                    "parameter": paramName,
+                                    "payload": payload,
+                                    "proof": f"Payload '{payload}' found in {viewUrl} after submission."
+                                }
+                                self.vulnerabilitiesFound.append(vulnerabilityDetails)
+                                print(f"\n[!!!] XSS Stored detectado (simulado) en '{paramName}'.")
+                                pbar.colour = 'red'
+                            else:
+                                print(f"[*] Payload no reflejado en {viewUrl}.")
                         else:
-                            print(f"[*] Payload no reflejado en {view_url}.")
+                            print(f"[*] No se pudo acceder a la URL de visualización: {viewUrl}")
                     else:
-                        print(f"[*] No se pudo acceder a la URL de visualización: {view_url}")
+                        print(f"[*] El envío del payload parece no haber sido exitoso.")
                 else:
-                    print(f"[*] Falló el envío del payload a {submit_url}.")
+                    print(f"[*] Falló el envío del payload a {submitUrl} (HTTP Status: {submitResponse.status_code if submitResponse else 'N/A'}).")
                 pbar.update(1)
 
-    def generate_report(self):
+    def generateReport(self):
         """
         Genera un reporte simple de las vulnerabilidades encontradas.
         """
         print("\n=== REPORTE DE VULNERABILIDADES ===")
-        if not self.vulnerabilities_found:
+        if not self.vulnerabilitiesFound:
             print("No se encontraron vulnerabilidades.")
             return
 
-        for i, vuln in enumerate(self.vulnerabilities_found):
+        for i, vuln in enumerate(self.vulnerabilitiesFound):
             print(f"\n--- Vulnerabilidad {i+1} ---")
             print(f"Tipo: {vuln['type']}")
-            print(f"URL Afectada: {vuln.get('url') or vuln.get('submit_url')}")
+            print(f"URL Afectada: {vuln.get('url') or vuln.get('submitUrl')}")
             if 'parameter' in vuln:
                 print(f"Parámetro: {vuln['parameter']}")
             print(f"Payload Utilizado: {vuln['payload']}")
@@ -287,82 +296,90 @@ class WebVulnScanner:
             print("-" * 30)
         print("\nReporte de vulnerabilidades completado.")
 
-# --- EJECUCIÓN DEL SCRIPT ---
+def main():
+    warnings.filterwarnings("ignore", category=UserWarning, module='urllib3')
 
-# Ignorar la advertencia de urllib3 (LibreSSL) en macOS si aparece
-import warnings
-warnings.filterwarnings("ignore", category=UserWarning, module='urllib3')
+    print("=== Herramienta de Detección de Vulnerabilidades Web (Requerimiento 3) ===")
+    print("La URL base y los parámetros se cargan desde las variables en tu archivo .env.")
 
-if __name__ == "__main__":
-    print("=== Herramienta de Detección de Vulnerabilidades Web (SQLi, XSS) ===")
-    print("¡ADVERTENCIA! Usa esta herramienta SOLO en entornos de laboratorio autorizados (ej. DVWA, WebGoat, OWASP Juice Shop).")
-    print("La URL base se carga desde la variable 'TARGET' en tu archivo .env.")
+    scanner = WebVulnScanner(webVulnTarget)
 
-    # La URL base ahora se toma de la variable global TARGET del .env
-    target_base_url = TARGET 
+    print("\n[*] Intentando autenticar en DVWA (si TARGET es una URL de DVWA)...")
+    loginUrl = urljoin(scanner.baseUrl, "login.php")
     
-    scanner = WebVulnScanner(target_base_url)
+    loginData = {
+        'username': webLoginUsername,
+        'password': webLoginPassword,
+        'Login': 'Login',
+        'user_token': scanner.getDvwaCsrfToken(loginUrl) 
+    }
+    loginResponse = scanner.sendRequest('post', loginUrl, data=loginData)
+    if loginResponse and "You have logged in as 'admin'" in loginResponse.text:
+        print("[+] Autenticación en DVWA exitosa.")
+        securityUrl = urljoin(scanner.baseUrl, "security.php")
+        securityData = {
+            'security': 'low',
+            'seclev_submit': 'Submit',
+            'user_token': scanner.getDvwaCsrfToken(securityUrl)
+        }
+        securityResponse = scanner.sendRequest('post', securityUrl, data=securityData)
+        if securityResponse and "Security level set to low" in securityResponse.text:
+            print("[+] Nivel de seguridad de DVWA configurado a 'low'.")
+        else:
+            print("[-] Falló la configuración del nivel de seguridad de DVWA a 'low'.")
+    else:
+        print("[-] Falló la autenticación en DVWA. Asegúrate de que las credenciales son correctas y el servicio está activo.")
 
     print("\n--- Selecciona las pruebas a realizar ---")
-    run_sqli = input("¿Deseas probar SQL Injection? (s/n): ").lower() == 's'
-    run_xss_reflected = input("¿Deseas probar XSS Reflected? (s/n): ").lower() == 's'
-    run_xss_stored = input("¿Deseas probar XSS Stored (simulado)? (s/n): ").lower() == 's'
+    runSqli = input("¿Deseas probar SQL Injection? (s/n): ").lower() == 's'
+    runXssReflected = input("¿Deseas probar XSS Reflected? (s/n): ").lower() == 's'
+    runXssStored = input("¿Deseas probar XSS Stored (simulado)? (s/n): ").lower() == 's'
 
-    if run_sqli:
+    if runSqli:
         print("\nPara SQL Injection, la herramienta necesita saber si los parámetros están en GET o POST.")
-        sqli_method = input(f"¿Los parámetros para SQLi son GET o POST para {target_base_url}? (get/post): ").lower()
-        if sqli_method == 'get':
-            # Ejemplo: si TARGET es http://localhost/dvwa/, el usuario ingresaría /vulnerabilities/sqli/?id=1&Submit=Submit
-            # O directamente la URL completa si es de otro host
-            sqli_path = input("Ingresa la RUTA O URL COMPLETA del endpoint con parámetros GET (ej. /vulnerabilities/sqli/): ")
-            # Combinamos la base_url con la ruta ingresada
-            full_sqli_url = urljoin(scanner.base_url, sqli_path)
-            scanner.check_sql_injection(full_sqli_url, query_params={})
-        elif sqli_method == 'post':
-            sqli_path = input("Ingresa la RUTA O URL COMPLETA del endpoint POST (ej. /login.php): ")
-            full_sqli_url = urljoin(scanner.base_url, sqli_path)
-            print("Se necesitan los nombres de los parámetros POST y un valor inicial. Ej: username, password")
-            param_names_input = input("Nombres de parámetros POST separados por coma (ej. username,password): ")
-            form_data = {}
-            for name in param_names_input.split(','):
-                form_data[name.strip()] = "test_value"
-            scanner.check_sql_injection(full_sqli_url, form_params=form_data)
+        sqliMethod = input(f"¿Los parámetros para SQLi son GET o POST para {webVulnTarget}? (get/post): ").lower()
+        if sqliMethod == 'get':
+            sqliPath = input("Ingresa la RUTA O URL COMPLETA del endpoint con parámetros GET (ej. /vulnerabilities/sqli/): ")
+            fullSqliUrl = urljoin(scanner.baseUrl, sqliPath)
+            scanner.checkSqlInjection(fullSqliUrl, paramNames=sqliGetParams, method='get')
+        elif sqliMethod == 'post':
+            sqliPath = input("Ingresa la RUTA O URL COMPLETA del endpoint POST (ej. /login.php): ")
+            fullSqliUrl = urljoin(scanner.baseUrl, sqliPath)
+            scanner.checkSqlInjection(fullSqliUrl, paramNames=sqliPostParams, method='post')
         else:
             print("Método inválido para SQL Injection.")
 
-    if run_xss_reflected:
+    if runXssReflected:
         print("\nPara XSS Reflected, la herramienta necesita saber si los parámetros están en GET o POST.")
-        xss_reflected_method = input(f"¿Los parámetros para XSS Reflected son GET o POST para {target_base_url}? (get/post): ").lower()
-        if xss_reflected_method == 'get':
-            xss_reflected_path = input("Ingresa la RUTA O URL COMPLETA del endpoint con parámetros GET (ej. /vulnerabilities/xss_r/): ")
-            full_xss_reflected_url = urljoin(scanner.base_url, xss_reflected_path)
-            scanner.check_xss_reflected(full_xss_reflected_url, query_params={})
-        elif xss_reflected_method == 'post':
-            xss_reflected_path = input("Ingresa la RUTA O URL COMPLETA del endpoint POST (ej. /comments.php): ")
-            full_xss_reflected_url = urljoin(scanner.base_url, xss_reflected_path)
-            print("Se necesitan los nombres de los parámetros POST y un valor inicial. Ej: comment, name")
-            param_names_input = input("Nombres de parámetros POST separados por coma (ej. field1,field2): ")
-            form_data = {}
-            for name in param_names_input.split(','):
-                form_data[name.strip()] = "test_value"
-            scanner.check_xss_reflected(full_xss_reflected_url, form_params=form_data)
+        xssReflectedMethod = input(f"¿Los parámetros para XSS Reflected son GET o POST para {webVulnTarget}? (get/post): ").lower()
+        if xssReflectedMethod == 'get':
+            xssReflectedPath = input("Ingresa la RUTA O URL COMPLETA del endpoint con parámetros GET (ej. /vulnerabilities/xss_r/): ")
+            fullXssReflectedUrl = urljoin(scanner.baseUrl, xssReflectedPath)
+            scanner.checkXssReflected(fullXssReflectedUrl, paramNames=xssReflectedGetParams, method='get')
+        elif xssReflectedMethod == 'post':
+            xssReflectedPath = input("Ingresa la RUTA O URL COMPLETA del endpoint POST (ej. /comments.php): ")
+            fullXssReflectedUrl = urljoin(scanner.baseUrl, xssReflectedPath)
+            scanner.checkXssReflected(fullXssReflectedUrl, paramNames=xssReflectedPostParams, method='post')
         else:
             print("Método inválido para XSS Reflected.")
 
-    if run_xss_stored:
+    if runXssStored:
         print("\nPara XSS Stored (simulado), se necesita una URL de envío y una de visualización.")
-        xss_submit_path = input("Ingresa la RUTA O URL COMPLETA donde se envía el contenido (ej. /post_comment.php): ")
-        xss_view_path = input("Ingresa la RUTA O URL COMPLETA donde se visualiza el contenido (ej. /view_comments.php): ")
+        xssSubmitPath = input("Ingresa la RUTA O URL COMPLETA donde se envía el contenido (ej. /vulnerabilities/xss_s/): ")
+        xssViewPath = input("Ingresa la RUTA O URL COMPLETA donde se visualiza el contenido (ej. /vulnerabilities/xss_s/): ")
         
-        full_xss_submit_url = urljoin(scanner.base_url, xss_submit_path)
-        full_xss_view_url = urljoin(scanner.base_url, xss_view_path)
+        fullXssSubmitUrl = urljoin(scanner.baseUrl, xssSubmitPath)
+        fullXssViewUrl = urljoin(scanner.baseUrl, xssViewPath)
 
-        print("Se necesitan los nombres de los parámetros POST para el envío. Ej: comment, author")
-        submit_param_names = input("Nombres de parámetros POST para envío (ej. content,username): ")
-        submit_data = {}
-        for name in submit_param_names.split(','):
-            submit_data[name.strip()] = "initial_test_value"
-        scanner.check_xss_stored(full_xss_submit_url, full_xss_view_url, submit_data)
+        scanner.checkXssStored(fullXssSubmitUrl, fullXssViewUrl, submitParamNames=xssStoredSubmitParams)
         
-    scanner.generate_report()
+    scanner.generateReport()
     print("\n--- Detección de vulnerabilidades web completada ---")
+
+if __name__ == "__main__":
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        print("[!] La librería 'beautifulsoup4' no está instalada. Ejecute 'pip install beautifulsoup4 lxml' para la detección de vulnerabilidades web.")
+    
+    main()
