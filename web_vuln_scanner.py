@@ -11,10 +11,23 @@ import warnings
 webVulnTarget = config('WEB_VULN_TARGET')
 webLoginUsername = config('WEB_LOGIN_USERNAME', default='admin')
 webLoginPassword = config('WEB_LOGIN_PASSWORD', default='password')
-sqliGetParams = [p.strip() for p in config('SQLI_GET_PARAMS', default='').split(',') if p.strip()]
-sqliPostParams = [p.strip() for p in config('SQLI_POST_PARAMS', default='').split(',') if p.strip()]
-xssReflectedGetParams = [p.strip() for p in config('XSS_REFLECTED_GET_PARAMS', default='').split(',') if p.strip()]
-xssReflectedPostParams = [p.strip() for p in config('XSS_REFLECTED_POST_PARAMS', default='').split(',') if p.strip()]
+
+# Cargar los parámetros de control para las pruebas
+runSqli = config('RUN_SQLI', default='false').lower() == 'true'
+runXssReflected = config('RUN_XSS_REFLECTED', default='false').lower() == 'true'
+runXssStored = config('RUN_XSS_STORED', default='false').lower() == 'true'
+
+# Cargar las configuraciones de cada test desde el .env
+sqliMethod = config('SQLI_METHOD', default='get')
+sqliPath = config('SQLI_PATH', default='')
+sqliParams = [p.strip() for p in config('SQLI_PARAMS', default='').split(',') if p.strip()]
+
+xssReflectedMethod = config('XSS_REFLECTED_METHOD', default='get')
+xssReflectedPath = config('XSS_REFLECTED_PATH', default='')
+xssReflectedParams = [p.strip() for p in config('XSS_REFLECTED_PARAMS', default='').split(',') if p.strip()]
+
+xssStoredSubmitPath = config('XSS_STORED_SUBMIT_PATH', default='')
+xssStoredViewPath = config('XSS_STORED_VIEW_PATH', default='')
 xssStoredSubmitParams = [p.strip() for p in config('XSS_STORED_SUBMIT_PARAMS', default='').split(',') if p.strip()]
 
 class WebVulnScanner:
@@ -26,7 +39,6 @@ class WebVulnScanner:
         if not parsedUrl.scheme or not parsedUrl.netloc:
             raise ValueError(f"URL base '{baseUrl}' no es válida o no tiene un esquema (ej. http:// o https://).")
             
-        # Asegurarse de que la URL base siempre termine con una barra
         self.baseUrl = baseUrl.rstrip('/') + '/'
         self.session = requests.Session()
         self.vulnerabilitiesFound = []
@@ -265,7 +277,7 @@ class WebVulnScanner:
                                     "payload": payload,
                                     "proof": f"Payload '{payload}' found in {viewUrl} after submission."
                                 }
-                                self.vulnerabilitiesFound.append(vulnerabilityDetails)
+                                self.vulnerabilitiesFound.append(vulnerabilidadDetails)
                                 print(f"\n[!!!] XSS Stored detectado (simulado) en '{paramName}'.")
                                 pbar.colour = 'red'
                             else:
@@ -332,47 +344,18 @@ def main():
     else:
         print("[-] Falló la autenticación en DVWA. Asegúrate de que las credenciales son correctas y el servicio está activo.")
 
-    print("\n--- Selecciona las pruebas a realizar ---")
-    runSqli = input("¿Deseas probar SQL Injection? (s/n): ").lower() == 's'
-    runXssReflected = input("¿Deseas probar XSS Reflected? (s/n): ").lower() == 's'
-    runXssStored = input("¿Deseas probar XSS Stored (simulado)? (s/n): ").lower() == 's'
-
+    # --- Ejecutar pruebas basadas en la configuración del .env ---
     if runSqli:
-        print("\nPara SQL Injection, la herramienta necesita saber si los parámetros están en GET o POST.")
-        sqliMethod = input(f"¿Los parámetros para SQLi son GET o POST para {webVulnTarget}? (get/post): ").lower()
-        if sqliMethod == 'get':
-            sqliPath = input("Ingresa la RUTA O URL COMPLETA del endpoint con parámetros GET (ej. /vulnerabilities/sqli/): ")
-            fullSqliUrl = urljoin(scanner.baseUrl, sqliPath)
-            scanner.checkSqlInjection(fullSqliUrl, paramNames=sqliGetParams, method='get')
-        elif sqliMethod == 'post':
-            sqliPath = input("Ingresa la RUTA O URL COMPLETA del endpoint POST (ej. /login.php): ")
-            fullSqliUrl = urljoin(scanner.baseUrl, sqliPath)
-            scanner.checkSqlInjection(fullSqliUrl, paramNames=sqliPostParams, method='post')
-        else:
-            print("Método inválido para SQL Injection.")
+        fullSqliUrl = urljoin(scanner.baseUrl, sqliPath)
+        scanner.checkSqlInjection(fullSqliUrl, paramNames=sqliParams, method=sqliMethod)
 
     if runXssReflected:
-        print("\nPara XSS Reflected, la herramienta necesita saber si los parámetros están en GET o POST.")
-        xssReflectedMethod = input(f"¿Los parámetros para XSS Reflected son GET o POST para {webVulnTarget}? (get/post): ").lower()
-        if xssReflectedMethod == 'get':
-            xssReflectedPath = input("Ingresa la RUTA O URL COMPLETA del endpoint con parámetros GET (ej. /vulnerabilities/xss_r/): ")
-            fullXssReflectedUrl = urljoin(scanner.baseUrl, xssReflectedPath)
-            scanner.checkXssReflected(fullXssReflectedUrl, paramNames=xssReflectedGetParams, method='get')
-        elif xssReflectedMethod == 'post':
-            xssReflectedPath = input("Ingresa la RUTA O URL COMPLETA del endpoint POST (ej. /comments.php): ")
-            fullXssReflectedUrl = urljoin(scanner.baseUrl, xssReflectedPath)
-            scanner.checkXssReflected(fullXssReflectedUrl, paramNames=xssReflectedPostParams, method='post')
-        else:
-            print("Método inválido para XSS Reflected.")
+        fullXssReflectedUrl = urljoin(scanner.baseUrl, xssReflectedPath)
+        scanner.checkXssReflected(fullXssReflectedUrl, paramNames=xssReflectedParams, method=xssReflectedMethod)
 
     if runXssStored:
-        print("\nPara XSS Stored (simulado), se necesita una URL de envío y una de visualización.")
-        xssSubmitPath = input("Ingresa la RUTA O URL COMPLETA donde se envía el contenido (ej. /vulnerabilities/xss_s/): ")
-        xssViewPath = input("Ingresa la RUTA O URL COMPLETA donde se visualiza el contenido (ej. /vulnerabilities/xss_s/): ")
-        
-        fullXssSubmitUrl = urljoin(scanner.baseUrl, xssSubmitPath)
-        fullXssViewUrl = urljoin(scanner.baseUrl, xssViewPath)
-
+        fullXssSubmitUrl = urljoin(scanner.baseUrl, xssStoredSubmitPath)
+        fullXssViewUrl = urljoin(scanner.baseUrl, xssStoredViewPath)
         scanner.checkXssStored(fullXssSubmitUrl, fullXssViewUrl, submitParamNames=xssStoredSubmitParams)
         
     scanner.generateReport()
