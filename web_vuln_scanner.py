@@ -26,7 +26,8 @@ class WebVulnScanner:
         if not parsedUrl.scheme or not parsedUrl.netloc:
             raise ValueError(f"URL base '{baseUrl}' no es válida o no tiene un esquema (ej. http:// o https://).")
             
-        self.baseUrl = baseUrl
+        # Asegurarse de que la URL base siempre termine con una barra
+        self.baseUrl = baseUrl.rstrip('/') + '/'
         self.session = requests.Session()
         self.vulnerabilitiesFound = []
         self.commonSqlErrors = [
@@ -52,7 +53,7 @@ class WebVulnScanner:
         """
         Método auxiliar para enviar peticiones HTTP/HTTPS con manejo de errores.
         """
-        print(f"[*] Accediendo a: {url}") # <-- Línea de depuración añadida
+        print(f"[*] Accediendo a: {url}")
         try:
             if method.lower() == 'get':
                 response = self.session.get(url, params=params, timeout=timeout, allow_redirects=allowRedirects)
