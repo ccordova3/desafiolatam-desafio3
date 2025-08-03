@@ -75,7 +75,7 @@ pip install python-decouple tqdm python-whois requests beautifulsoup4 lxml
 Puedes ejecutar la suite completa o cada script de forma individual, dependiendo de tus necesidades.
 
 #### Ejecutar la Suite Completa (Recomendado)
-Para ejecutar todas las fases del test de penetración de forma secuencial, utiliza el siguiente comando:
+Para ejecutar todas las fases del test de penetración de forma secuencial, utiliza el siguiente comando. Los resultados completos se guardarán en un archivo results-<timestamp>.txt en la misma carpeta.
 
 ```ini
 python3 main_pentest_suite.py
